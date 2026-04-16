@@ -13,16 +13,18 @@ The plugin runs as an [execd](https://github.com/influxdata/telegraf/tree/master
   [[inputs.nicctl.command_group]]
     interval = "5s"
     commands = [
-      "sudo nicctl show port statistics --json",
-      "sudo nicctl show lif statistics --json",
+      "nicctl show port statistics",
+      "nicctl show lif statistics",
     ]
 
   [[inputs.nicctl.command_group]]
     interval = "30s"
     commands = [
-      "sudo nicctl show card statistics packet-buffer --json",
+      "nicctl show card statistics packet-buffer",
     ]
 ```
+
+`sudo` and `--json` are automatically added to commands if not already present.
 
 ## Building
 
@@ -70,7 +72,7 @@ INTEGRATION_HOST=10.9.10.145 make integration
 | Field | Description |
 |---|---|
 | `interval` | Polling interval for the command group (e.g., `"5s"`, `"1m"`). Minimum `1s`. |
-| `commands` | List of `nicctl` commands to run. Each must produce JSON output. |
+| `commands` | List of `nicctl` commands to run. `sudo` and `--json` are automatically added if not present. |
 | `measurement_overrides` | Optional map of command string to custom measurement name. |
 
 ### Measurement Names
@@ -79,14 +81,14 @@ Measurement names are derived automatically from the command string by stripping
 
 | Command | Measurement |
 |---|---|
-| `sudo nicctl show port statistics --json` | `nicctl_port_statistics` |
-| `sudo nicctl show lif statistics --json` | `nicctl_lif_statistics` |
-| `sudo nicctl show card statistics packet-buffer --json` | `nicctl_card_statistics_packet_buffer` |
+| `nicctl show port statistics` | `nicctl_port_statistics` |
+| `nicctl show lif statistics` | `nicctl_lif_statistics` |
+| `nicctl show card statistics packet-buffer` | `nicctl_card_statistics_packet_buffer` |
 
 Override with `measurement_overrides`:
 ```toml
 [inputs.nicctl.command_group.measurement_overrides]
-  "sudo nicctl show port statistics --json" = "my_port_stats"
+  "nicctl show port statistics" = "my_port_stats"
 ```
 
 ### JSON Flattening

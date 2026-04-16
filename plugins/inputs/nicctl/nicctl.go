@@ -2,6 +2,7 @@ package nicctl
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,20 +31,21 @@ type NicctlPlugin struct {
 func (n *NicctlPlugin) SampleConfig() string {
 	return `
   ## Command groups define sets of nicctl commands with independent polling intervals.
+  ## "sudo" and "--json" are automatically added if not present.
   [[inputs.nicctl.command_group]]
     interval = "5s"
     commands = [
-      "sudo nicctl show port statistics --json",
-      "sudo nicctl show lif statistics --json",
+      "nicctl show port statistics",
+      "nicctl show lif statistics",
     ]
     # Optional: override derived measurement names per command.
     # [inputs.nicctl.command_group.measurement_overrides]
-    #   "sudo nicctl show port statistics --json" = "my_port_stats"
+    #   "nicctl show port statistics" = "my_port_stats"
 
   [[inputs.nicctl.command_group]]
     interval = "30s"
     commands = [
-      "sudo nicctl show card statistics packet-buffer --json",
+      "nicctl show card statistics packet-buffer",
     ]
 `
 }
@@ -71,6 +73,18 @@ func (n *NicctlPlugin) Init() error {
 		}
 		group.parsedInterval = d
 		group.lastRun = make(map[string]time.Time)
+
+		for j, cmd := range group.Commands {
+			group.Commands[j] = normalizeCommand(cmd)
+		}
+
+		if group.MeasurementOverrides != nil {
+			normalized := make(map[string]string, len(group.MeasurementOverrides))
+			for k, v := range group.MeasurementOverrides {
+				normalized[normalizeCommand(k)] = v
+			}
+			group.MeasurementOverrides = normalized
+		}
 	}
 
 	if n.runner == nil {
@@ -129,6 +143,17 @@ func (n *NicctlPlugin) Gather(acc telegraf.Accumulator) error {
 	}
 
 	return nil
+}
+
+// normalizeCommand ensures the command has "sudo" prefix and "--json" suffix.
+func normalizeCommand(cmd string) string {
+	if !strings.HasPrefix(cmd, "sudo ") {
+		cmd = "sudo " + cmd
+	}
+	if !strings.HasSuffix(cmd, " --json") {
+		cmd = cmd + " --json"
+	}
+	return cmd
 }
 
 func init() {

@@ -120,15 +120,45 @@ func TestInit_Valid(t *testing.T) {
 	}
 }
 
+func TestInit_NormalizeCommands(t *testing.T) {
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{
+				"nicctl show port statistics",
+				"sudo nicctl show lif statistics --json",
+				"sudo nicctl show card statistics",
+				"nicctl show system --json",
+			}},
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	cmds := p.CommandGroups[0].Commands
+	expected := []string{
+		"sudo nicctl show port statistics --json",
+		"sudo nicctl show lif statistics --json",
+		"sudo nicctl show card statistics --json",
+		"sudo nicctl show system --json",
+	}
+	for i, want := range expected {
+		if cmds[i] != want {
+			t.Errorf("command[%d]: got %q, want %q", i, cmds[i], want)
+		}
+	}
+}
+
 func TestGather_FirstRun(t *testing.T) {
 	mock := NewMockRunner()
-	cmd := "sudo nicctl show port statistics --json"
-	mock.SetOutput(cmd, []byte(`{"tx": 100, "rx": 200}`))
+	// Init will prepend sudo
+	execCmd := "sudo nicctl show port statistics --json"
+	mock.SetOutput(execCmd, []byte(`{"tx": 100, "rx": 200}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd}},
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -156,20 +186,19 @@ func TestGather_FirstRun(t *testing.T) {
 	if m.Fields["rx"] != int64(200) {
 		t.Errorf("expected rx=200, got %v", m.Fields["rx"])
 	}
-	if m.Tags["command"] != cmd {
-		t.Errorf("expected command tag, got %v", m.Tags["command"])
+	if m.Tags["command"] != execCmd {
+		t.Errorf("expected command tag %q, got %v", execCmd, m.Tags["command"])
 	}
 }
 
 func TestGather_SkipsBeforeInterval(t *testing.T) {
 	mock := NewMockRunner()
-	cmd := "sudo nicctl show port statistics --json"
-	mock.SetOutput(cmd, []byte(`{"tx": 100}`))
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"tx": 100}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd}},
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -198,13 +227,12 @@ func TestGather_SkipsBeforeInterval(t *testing.T) {
 
 func TestGather_RunsAfterInterval(t *testing.T) {
 	mock := NewMockRunner()
-	cmd := "sudo nicctl show port statistics --json"
-	mock.SetOutput(cmd, []byte(`{"tx": 100}`))
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"tx": 100}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd}},
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -230,15 +258,16 @@ func TestGather_RunsAfterInterval(t *testing.T) {
 
 func TestGather_CommandFailureDoesNotCrash(t *testing.T) {
 	mock := NewMockRunner()
-	cmd1 := "sudo nicctl show port statistics --json"
-	cmd2 := "sudo nicctl show lif statistics --json"
-	mock.SetError(cmd1, fmt.Errorf("command failed"))
-	mock.SetOutput(cmd2, []byte(`{"active": 5}`))
+	mock.SetError("sudo nicctl show port statistics --json", fmt.Errorf("command failed"))
+	mock.SetOutput("sudo nicctl show lif statistics --json", []byte(`{"active": 5}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd1, cmd2}},
+			{Interval: "5s", Commands: []string{
+				"nicctl show port statistics",
+				"nicctl show lif statistics",
+			}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -260,13 +289,12 @@ func TestGather_CommandFailureDoesNotCrash(t *testing.T) {
 
 func TestGather_InvalidJSONDoesNotCrash(t *testing.T) {
 	mock := NewMockRunner()
-	cmd := "sudo nicctl show port statistics --json"
-	mock.SetOutput(cmd, []byte(`not valid json`))
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`not valid json`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd}},
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -288,17 +316,16 @@ func TestGather_InvalidJSONDoesNotCrash(t *testing.T) {
 
 func TestGather_MeasurementOverride(t *testing.T) {
 	mock := NewMockRunner()
-	cmd := "sudo nicctl show port statistics --json"
-	mock.SetOutput(cmd, []byte(`{"tx": 1}`))
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"tx": 1}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
 			{
 				Interval: "5s",
-				Commands: []string{cmd},
+				Commands: []string{"nicctl show port statistics"},
 				MeasurementOverrides: map[string]string{
-					cmd: "custom_port_stats",
+					"nicctl show port statistics": "custom_port_stats",
 				},
 			},
 		},
@@ -322,16 +349,14 @@ func TestGather_MeasurementOverride(t *testing.T) {
 
 func TestGather_MultipleGroupsIndependent(t *testing.T) {
 	mock := NewMockRunner()
-	cmd1 := "sudo nicctl show port statistics --json"
-	cmd2 := "sudo nicctl show card statistics packet-buffer --json"
-	mock.SetOutput(cmd1, []byte(`{"tx": 1}`))
-	mock.SetOutput(cmd2, []byte(`{"buf": 2}`))
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"tx": 1}`))
+	mock.SetOutput("sudo nicctl show card statistics packet-buffer --json", []byte(`{"buf": 2}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd1}},
-			{Interval: "30s", Commands: []string{cmd2}},
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+			{Interval: "30s", Commands: []string{"nicctl show card statistics packet-buffer"}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -369,13 +394,13 @@ func TestGather_MultipleGroupsIndependent(t *testing.T) {
 
 func TestGather_TagsIncludeCommand(t *testing.T) {
 	mock := NewMockRunner()
-	cmd := "sudo nicctl show port statistics --json"
-	mock.SetOutput(cmd, []byte(`{"tx": 1}`))
+	execCmd := "sudo nicctl show port statistics --json"
+	mock.SetOutput(execCmd, []byte(`{"tx": 1}`))
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := &NicctlPlugin{
 		CommandGroups: []*CommandGroup{
-			{Interval: "5s", Commands: []string{cmd}},
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
 		},
 		runner:  mock,
 		nowFunc: func() time.Time { return now },
@@ -388,8 +413,8 @@ func TestGather_TagsIncludeCommand(t *testing.T) {
 	if len(acc.Metrics) != 1 {
 		t.Fatalf("expected 1 metric, got %d", len(acc.Metrics))
 	}
-	if acc.Metrics[0].Tags["command"] != cmd {
-		t.Errorf("expected command tag %q, got %q", cmd, acc.Metrics[0].Tags["command"])
+	if acc.Metrics[0].Tags["command"] != execCmd {
+		t.Errorf("expected command tag %q, got %q", execCmd, acc.Metrics[0].Tags["command"])
 	}
 }
 
