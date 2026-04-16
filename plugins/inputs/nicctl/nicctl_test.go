@@ -418,5 +418,259 @@ func TestGather_TagsIncludeCommand(t *testing.T) {
 	}
 }
 
+func TestInit_EmptyInterval(t *testing.T) {
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "", Commands: []string{"nicctl show port statistics"}},
+		},
+	}
+	err := p.Init()
+	if err == nil {
+		t.Fatal("expected error for empty interval")
+	}
+}
+
+func TestInit_NegativeInterval(t *testing.T) {
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "-5s", Commands: []string{"nicctl show port statistics"}},
+		},
+	}
+	err := p.Init()
+	if err == nil {
+		t.Fatal("expected error for negative interval")
+	}
+}
+
+func TestInit_ZeroInterval(t *testing.T) {
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "0s", Commands: []string{"nicctl show port statistics"}},
+		},
+	}
+	err := p.Init()
+	if err == nil {
+		t.Fatal("expected error for zero interval")
+	}
+}
+
+func TestInit_MultipleGroupsOneInvalid(t *testing.T) {
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+			{Interval: "bad", Commands: []string{"nicctl show lif statistics"}},
+		},
+	}
+	err := p.Init()
+	if err == nil {
+		t.Fatal("expected error when one group has bad interval")
+	}
+}
+
+func TestGather_AllCommandsFail(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetError("sudo nicctl show port statistics --json", fmt.Errorf("port failed"))
+	mock.SetError("sudo nicctl show lif statistics --json", fmt.Errorf("lif failed"))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{
+				"nicctl show port statistics",
+				"nicctl show lif statistics",
+			}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	err := p.Gather(acc)
+	if err != nil {
+		t.Fatalf("Gather should not return error, got: %v", err)
+	}
+	if len(acc.Errors) != 2 {
+		t.Fatalf("expected 2 errors, got %d", len(acc.Errors))
+	}
+	if len(acc.Metrics) != 0 {
+		t.Fatalf("expected 0 metrics, got %d", len(acc.Metrics))
+	}
+}
+
+func TestGather_EmptyJSONObject(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{}`))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	_ = p.Gather(acc)
+
+	if len(acc.Errors) != 0 {
+		t.Fatalf("expected 0 errors, got %d", len(acc.Errors))
+	}
+	if len(acc.Metrics) != 0 {
+		t.Fatalf("expected 0 metrics for empty JSON, got %d", len(acc.Metrics))
+	}
+}
+
+func TestGather_EmptyJSONArray(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`[]`))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	_ = p.Gather(acc)
+
+	if len(acc.Errors) != 0 {
+		t.Fatalf("expected 0 errors, got %d", len(acc.Errors))
+	}
+	if len(acc.Metrics) != 0 {
+		t.Fatalf("expected 0 metrics for empty array, got %d", len(acc.Metrics))
+	}
+}
+
+func TestGather_TruncatedJSON(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"tx": 100, "rx"`))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	_ = p.Gather(acc)
+
+	if len(acc.Errors) != 1 {
+		t.Fatalf("expected 1 error for truncated JSON, got %d", len(acc.Errors))
+	}
+	if len(acc.Metrics) != 0 {
+		t.Fatalf("expected 0 metrics, got %d", len(acc.Metrics))
+	}
+}
+
+func TestGather_EmptyOutput(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(``))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	_ = p.Gather(acc)
+
+	if len(acc.Errors) != 1 {
+		t.Fatalf("expected 1 error for empty output, got %d", len(acc.Errors))
+	}
+	if len(acc.Metrics) != 0 {
+		t.Fatalf("expected 0 metrics, got %d", len(acc.Metrics))
+	}
+}
+
+func TestGather_JSONAllNulls(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"a": null, "b": null}`))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	_ = p.Gather(acc)
+
+	if len(acc.Errors) != 0 {
+		t.Fatalf("expected 0 errors, got %d", len(acc.Errors))
+	}
+	if len(acc.Metrics) != 0 {
+		t.Fatalf("expected 0 metrics when all values are null, got %d", len(acc.Metrics))
+	}
+}
+
+func TestGather_CommandFailureDoesNotUpdateLastRun(t *testing.T) {
+	mock := NewMockRunner()
+	mock.SetError("sudo nicctl show port statistics --json", fmt.Errorf("command failed"))
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &NicctlPlugin{
+		CommandGroups: []*CommandGroup{
+			{Interval: "5s", Commands: []string{"nicctl show port statistics"}},
+		},
+		runner:  mock,
+		nowFunc: func() time.Time { return now },
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	acc := &testutil.Accumulator{}
+	_ = p.Gather(acc)
+	if mock.CallCount() != 1 {
+		t.Fatalf("expected 1 call, got %d", mock.CallCount())
+	}
+
+	// Should retry immediately on next gather since lastRun was not set
+	now = now.Add(1 * time.Second)
+	mock.SetOutput("sudo nicctl show port statistics --json", []byte(`{"tx": 1}`))
+	delete(mock.errors, "sudo nicctl show port statistics --json")
+
+	acc = &testutil.Accumulator{}
+	_ = p.Gather(acc)
+	if mock.CallCount() != 2 {
+		t.Fatalf("expected 2 calls (retry after failure), got %d", mock.CallCount())
+	}
+	if len(acc.Metrics) != 1 {
+		t.Fatalf("expected 1 metric on retry, got %d", len(acc.Metrics))
+	}
+}
+
 // Ensure NicctlPlugin satisfies telegraf.Input.
 var _ telegraf.Input = (*NicctlPlugin)(nil)
